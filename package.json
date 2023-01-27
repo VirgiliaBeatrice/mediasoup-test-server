@@ -1,0 +1,17 @@
+{
+  "name": "mediasoup-test-server",
+  "version": "1.0.0",
+  "main": "index.js",
+  "license": "MIT",
+  "dependencies": {
+    "mediasoup": "3",
+    "pino": "^8.8.0",
+    "pino-pretty": "^9.1.1",
+    "socket.io": "^4.5.4",
+    "uuidv4": "^6.2.13"
+  },
+  "devDependencies": {
+    "@types/node": "^18.11.18",
+    "typescript": "^4.9.4"
+  }
+}
