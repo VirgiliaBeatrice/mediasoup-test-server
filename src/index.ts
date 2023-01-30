@@ -165,7 +165,7 @@ io.on("connection", async (socket) => {
     store.sessions.set(socket.id, new Session(socket.id))
 
     socket.on("disconnect", (reason) => {
-        logger.info(`Session has been finished, since ${reason}.`)
+        logger.info(`Session ${socket.id} has been finished, since ${reason}.`)
 
         store.sessions.get(socket.id)?.close()
 
@@ -174,88 +174,74 @@ io.on("connection", async (socket) => {
 
     socket.on('ms-request', async (request, cb) => {
         logger.info(`Received a new ms-request type: ${request.method}.`)
-        // logger.info(`show details of ms-request: ${JSON.stringify(request)}`)
 
-        try {
-            switch(request.method) {
-                case 'getRouterRtpCapabilities':
-                    cb({ method: request.method, payload: router!.rtpCapabilities })
-                    break;
-                case 'createTransport':
-                    var type = request.payload.type as 'produce' | 'consume'
-                    var response = await onCreateTransport(type)
+        var session = store.sessions.get(socket.id)
 
-                    cb({method: request.method, payload: response})
-                    break
-                case 'connectTransport':
-                    var item = request.payload as { id: string, dtlsParameters: any }
-                    // logger.info(item)
-                    var transport = store.producerTransport!.id === item.id? store.producerTransport! : store.consumerTransport!
-                    // logger.info(transport)
-                    // var transport = store.producerTransport!
-                    await onConnectTransport(transport as WebRtcTransport, item.dtlsParameters)
-                    cb({ method: request.method, payload: transport.id })
-                    break;
-                case 'createProducer':
-                    if (store.producerTransport) {
-                        await onProduce(store.producerTransport, request.payload)
+        if (session) {
+            try {
+                switch(request.method) {
+                    case 'getRouterRtpCapabilities':
+                        cb({ method: request.method, payload: router!.rtpCapabilities })
+                        break;
+                    case 'createTransport':
+                        var type = request.payload.type as 'produce' | 'consume'
+                        // var response = await onCreateTransport(type)
+                        var response = await onCreateTransportWithSession(session, type)
+    
+                        cb({method: request.method, payload: response})
+                        break
+                    case 'connectTransport':
+                        var remote = request.payload as { id: string, dtlsParameters: any }
 
-                        cb({ method: request.method, payload: store.producer!.id })
-                    }
-                    break;
-                case 'createConsumer':
-                    var options = request.payload
-                    // logger.info(`valid producer id: ${store.producer?.id}`)
-                    // logger.info(`request producer id: ${options.producerId}`)
+                        var transport = session.transports.get(remote.id)
 
-                    if (router?.canConsume(options)) {
-                        if (store.consumerTransport) {
-                            var data = await onConsume(store.consumerTransport, request.payload)
+                        await onConnectTransport(transport as WebRtcTransport, remote.dtlsParameters)
+                        cb({ method: request.method, payload: transport!.id })
+                        break;
+                    case 'createProducer':
+                        var producer = await onProduceWithSession(session, request.payload.transportId, request.payload.options)
+
+                        cb({ method: request.method, payload: producer.id })
+                        
+                        break;
+                    case 'createConsumer':
+                        if (router!.canConsume(request.payload.options)) {
+                            var data = await onConsumeWithSession(session, request.payload.transportId, request.payload.options)
 
                             cb({ method: request.method, payload: data })
-                        }
-                    }
-
-                    break;
+                        } 
+                        break;
+                    case 'pauseConsumer':
+                        break;
+                        
+                    case 'resumeConsumer':
+                        break;
+                        
+                    case 'pauseProducer':
+                        break;
+                    case 'resumeProducer':
+                        break;
+                }
+            } catch (error) {
+                logger.error(error)
             }
-        } catch (error) {
-            logger.error(error)
+        }
+        else {
+            logger.info('Could not find target session.')
         }
     })
 })
 
-interface setRemoteRtpCapabilitiesOptions {
-    producerId: string,
-    rtpCapabilities: types.RtpCapabilities
-}
-
-async function onSetRemoteRtpCapabilities(options: setRemoteRtpCapabilitiesOptions) {
-    if (router.canConsume(options)) {
-        var consumer = await store.consumerTransport?.consume({ ... options, paused: true })
-
-        store.consumer = consumer
-
-        return {
-            id: consumer?.id,
-            parameters: consumer?.id
-        }      
-    }
-
-    return undefined
-}
-
-let worker: any, router: types.Router
-
 async function onCreateTransportWithSession(session: Session, type: 'produce' | 'consume') {
     if (type === 'consume') {
-        let transport = await createTransport(store.router!)
+        let transport = await createTransportWithSession(session)
 
         session.transports.set(transport.id, transport)
 
         return toOptions(transport)
     }
     else {
-        let transport = await createTransport(store.router!)
+        let transport = await createTransportWithSession(session)
 
         session.transports.set(transport.id, transport)
 
@@ -297,41 +283,25 @@ async function onConnectTransport(transport: types.WebRtcTransport, dtlsParamete
     await transport.connect({ dtlsParameters })
 }
 
-async function onProduceWithTransport(session: Session, transportId: string, options: types.ProducerOptions) {
+async function onProduceWithSession(session: Session, transportId: string, options: types.ProducerOptions) {
     options = {...options, paused: false}
 
-    logger.info('Try to produce.')
+    logger.info(`Try to produce. Transport[${transportId}]`)
+    logger.info(session.transports)
 
     var transport = session.transports.get(transportId)
     var producer = await transport!.produce(options as types.ProducerOptions)
 
     session.producers.set(producer.id, producer)
 
-    // producer.observer.on('close', () => {
-    //     logger.info('producer closed.')
-    // })
-
-    // producer.observer.on('pause', () => {
-    //     logger.info('producer paused')
-    // })
-
-    // producer.observer.on('resume', () => {
-    //     logger.info('producer resumed')
-    // })
-
-    // producer.on('score', (score) => {
-
-    // })
-
-    // producer.on('videoorientationchange', (videoOrientation) => {
-
-    // })
-    // producer.on('trace', (trace) => {
-    //     // logger.info(trace.info)
-    // })
+    producer.on('@close', () => {
+        logger.info(`producer ${producer.id} closed.`)
+    })
     producer.on('transportclose', () => {
         logger.info('transport closed.')
     })
+
+    return producer
 }
 
 async function onProduce(transport: types.Transport, ...args: [any]) {
@@ -450,8 +420,6 @@ async function main() {
     store.webRtcServer = await worker.createWebRtcServer({ listenInfos: config.webRtcServerOptions.listenInfos})
     store.worker = worker
     store.router = router
-    // store.producerTransport = await createTransport(router)
-    // store.consumerTransport = await createTransport(router)
 }
 
 main()
