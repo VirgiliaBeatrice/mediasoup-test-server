@@ -11,6 +11,7 @@ import { createServer } from 'http'
 import { Router } from "mediasoup/node/lib/Router";
 import { Worker } from "mediasoup/node/lib/Worker";
 import { trace } from "console";
+import './monitor'
 
 const PORT = process.env.PORT || 3001
 const httpServer = createServer();
@@ -24,13 +25,8 @@ const logger = pino({
         target: 'pino-pretty'
     }
 })
-const roomId = uuid()
 
-httpServer.listen(8080, '0.0.0.0', () => {logger.info("Listen to: " + 8080)})
-
-const producers = new Map<string, types.Producer>()
-const consumers = new Map<string, types.Consumer>()
-const transports = new Map<string, types.Transport>()
+httpServer.listen(8081, '0.0.0.0', () => {logger.info("Listen to: " + 8081)})
 
 // { worker: types.WorkerSettings } 
 const config = {
@@ -80,13 +76,13 @@ const config = {
             {
                 protocol    : 'udp' as types.TransportProtocol,
                 ip          : process.env.MEDIASOUP_LISTEN_IP || '0.0.0.0',
-                announcedIp : process.env.MEDIASOUP_ANNOUNCED_IP || '133.167.113.61',
+                announcedIp : process.env.MEDIASOUP_ANNOUNCED_IP || '131.112.183.91',
                 port        : 40011
             },
             {
                 protocol    : 'tcp' as types.TransportProtocol,
                 ip          : process.env.MEDIASOUP_LISTEN_IP || '0.0.0.0',
-                announcedIp : process.env.MEDIASOUP_ANNOUNCED_IP || '133.167.113.61',
+                announcedIp : process.env.MEDIASOUP_ANNOUNCED_IP || '131.112.183.91',
                 port        : 40011
             }
         ],
@@ -136,13 +132,17 @@ class Session {
     }
 
     close() {
-        producers.forEach(p => p.close())
-        consumers.forEach(c => c.close())
-        transports.forEach(t => t.close())
+        logger.info(`Since this session ${this.id} has been closed, clear all unused resources.`)
+
+        logger.info(`Resources: producer * ${this.producers.size}`)
+        logger.info(`Resources: consumer * ${this.consumers.size}`)
+        logger.info(`Resources: transport * ${this.transports.size}`)
+
+        this.producers.forEach(p => {p.close()})
+        this.consumers.forEach(c => {c.close()})
+        this.transports.forEach(t => {t.close()})
     }
 }
-
-let producerId: string
 
 interface Request {
     method: string,
@@ -212,14 +212,32 @@ io.on("connection", async (socket) => {
                         } 
                         break;
                     case 'pauseConsumer':
+                        var consumer = session.consumers.get(request.payload.id as string)
+
+                        await consumer!.pause()
+
+                        cb({ method: request.method, payload: true })
                         break;
-                        
                     case 'resumeConsumer':
+                        var consumer = session.consumers.get(request.payload.id as string)
+
+                        await consumer!.resume()
+
+                        cb({ method: request.method, payload: true })
                         break;
-                        
                     case 'pauseProducer':
+                        var producer0 = session.producers.get(request.payload.id as string)
+
+                        await producer0!.pause()
+
+                        cb({ method: request.method, payload: true })
                         break;
                     case 'resumeProducer':
+                        var producer0 = session.producers.get(request.payload.id as string)
+
+                        await producer0!.resume()
+
+                        cb({ method: request.method, payload: true })
                         break;
                 }
             } catch (error) {
@@ -248,22 +266,6 @@ async function onCreateTransportWithSession(session: Session, type: 'produce' | 
         return toOptions(transport)
     }
 }
-
-async function onCreateTransport(type: 'produce' | 'consume') {
-    if (type === 'consume') {
-        let transport = store.consumerTransport = await createTransport(store.router!)
-
-        return toOptions(transport)
-    }
-    else {
-        let transport = store.producerTransport = await createTransport(store.router!)
-
-        return toOptions(transport)
-    }
-}
-
-
-// worker => router => transport => transport.connect => assign producer/consumer
 
 async function startMediasoup() {
     let worker = await createWorker(config.worker as types.WorkerSettings)
@@ -294,56 +296,11 @@ async function onProduceWithSession(session: Session, transportId: string, optio
 
     session.producers.set(producer.id, producer)
 
-    producer.on('@close', () => {
-        logger.info(`producer ${producer.id} closed.`)
-    })
     producer.on('transportclose', () => {
-        logger.info('transport closed.')
+        logger.info(`The transport of producer ${producer.id} closed.`)
     })
 
     return producer
-}
-
-async function onProduce(transport: types.Transport, ...args: [any]) {
-    var options = {...args[0], paused: false}
-
-    logger.info("Try to produce." + JSON.stringify(args))
-    var producer = await transport.produce(options as types.ProducerOptions)
-
-    store.producer = producer
-    // producer.enableTraceEvent(["rtp"])
-
-    
-    // setInterval(async () => {
-    //     logger.info(await transport.getStats())
-    // }, 1000)
-
-    producer.observer.on('close', () => {
-        logger.info('producer closed.')
-    })
-
-    producer.observer.on('pause', () => {
-        logger.info('producer paused')
-    })
-
-    producer.observer.on('resume', () => {
-        logger.info('producer resumed')
-    })
-
-    producer.on('score', (score) => {
-
-    })
-
-    producer.on('videoorientationchange', (videoOrientation) => {
-
-    })
-    producer.on('trace', (trace) => {
-        // logger.info(trace.info)
-    })
-    producer.on('transportclose', () => {
-        logger.info('transport closed.')
-    })
-    
 }
 
 async function onConsumeWithSession(session: Session, transportId: string, options: types.ConsumerOptions) {
@@ -351,19 +308,6 @@ async function onConsumeWithSession(session: Session, transportId: string, optio
     var consumer = await transport!.consume({ ...options, paused: true })
 
     session.consumers.set(consumer.id, consumer)
-
-    return {
-        id: consumer.id,
-        producerId: consumer.producerId,
-        kind: consumer.kind,
-        rtpParameters: consumer.rtpParameters,
-    }
-}
-
-async function onConsume(transport: types.Transport, ...args: [any]) {
-    var consumer = await transport.consume({...args[0], paused: true})
-
-    store.consumer = consumer
 
     return {
         id: consumer.id,
@@ -381,23 +325,11 @@ async function createTransportWithSession(session: Session) {
     transport.observer.on("close", () => {
         logger.info("[Observed] transport closed by some reason.")
     })
-
-    return transport
-}
-
-async function createTransport(router: types.Router) {
-    const transport = await router.createWebRtcTransport({...config.webRtcTransport, webRtcServer: store.webRtcServer as types.WebRtcServer})
-
-    transports.set(transport.id, transport)
-
-    // transport.enableTraceEvent(["probation", "bwe"])
-
-    // transport.on('trace', (trace) => {
-    //     // console.info(trace)
-    // })
-
-    transport.observer.on("close", () => {
-        logger.info("[Observed] transport closed by some reason.")
+    transport.observer.on(`newproducer`, (producer) => {
+        logger.info(`Transport[${transport.id}] have new producer-${producer.id}.`)
+    })
+    transport.observer.on(`newconsumer`, (consumer) => {
+        logger.info(`Transport[${transport.id}] have new consumer-${consumer.id}.`)
     })
 
     return transport
